@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Student Quadrant POC</title>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation"></script>
+    <script src="fetchClasses.js"></script>
+    <script src="fetchClassActivities.js"></script>
+    <script src="drawPerformanceMap.js"></script>
+    <script src="drawTimeChart.js"></script>
+    <script src="renderFrustration.js"></script>
+    <script src="drawCompletionChart.js"></script>
+    <link rel="stylesheet" href="index.css" />
+  </head>
+  <body>
+    <div class="sidebar">
+      <h2>Classroom</h2>
+      <select id="class-select">
+        <!-- <option value="class-uuid-1">8th Grade Algebra</option> -->
+      </select>
+      <script>
+        const classes = fetchClasses();
+        document.getElementById("class-select").innerHTML = classes
+          .map(
+            (cls) =>
+              `<option onclick="selectClass('${cls.id}')" value="${cls.id}">${cls.section.name} - ${cls.subjectCategory}</option>`,
+          )
+          .join("");
+      </script>
+
+      <h3>Activities</h3>
+      <ul id="activity-list"></ul>
+
+      <div id="questions-container" class="hidden">
+        <h3>Test Questions</h3>
+        <ul id="question-list"></ul>
+      </div>
+    </div>
+    <div
+      style="
+        display: flex;
+        justify-content: stretch;
+        align-items: center;
+        flex-wrap: wrap;
+      "
+    >
+      <div class="main-panel">
+        <h2>Performance Map</h2>
+        <p class="subtitle">
+          X-Axis: Relative Fluency &nbsp;&nbsp;|&nbsp;&nbsp; Y-Axis: Accuracy
+          (%)
+        </p>
+        <div>
+          <div style="margin-top: 20px; margin-bottom: 25px">
+            <label
+              style="
+                font-size: 13px;
+                font-weight: 600;
+                color: #64748b;
+                display: block;
+                margin-bottom: 8px;
+              "
+            >
+              Mastery Threshold:
+              <span id="threshold-val" style="color: #6366f1">70</span>%
+            </label>
+            <input
+              type="range"
+              id="mastery-threshold"
+              min="0"
+              max="100"
+              value="70"
+              step="1"
+              style="width: 100%"
+            />
+          </div>
+          <div style="height: 500px; width: 650px">
+            <canvas id="quadrantChart"></canvas>
+          </div>
+        </div>
+      </div>
+      <div class="main-panel">
+        <h2>Time Variance & Percentiles</h2>
+        <p class="subtitle">
+          Y-Axis: Time Spent (Seconds) | Sorted Fastest to Slowest
+        </p>
+        <div style="height: 500px; width: 650px">
+          <canvas id="timeVarianceChart"></canvas>
+        </div>
+      </div>
+      <div class="main-panel" style="width: 650px; overflow-y: auto;">
+        <h2 style="color: #f43f5e">⚠️ High Frustration</h2>
+        <p class="subtitle">
+          Students exerting the most effort for the lowest scores
+        </p>
+        <div
+          id="frustration-list"
+          style="
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-top: 15px;
+          "
+        >
+          <!-- Populated by JS -->
+        </div>
+      </div>
+      <div class="main-panel">
+        <h2>Completion Status</h2>
+        <p class="subtitle">
+          Completed (Has Score) vs. Not Completed (No Score)
+        </p>
+        <div style="height: 500px; width: 650px">
+          <canvas id="completionChart"></canvas>
+        </div>
+      </div>
+    </div>
+    <script>
+      let state = {
+        classId: classes[0].id,
+        activityId: null,
+        questionId: null,
+        masteryThreshold: 70, // Default threshold
+      };
+      let mockDB = fetchClassActivitiesGraphQL(state.classId);
+
+      function updateUI() {
+        const activityList = document.getElementById("activity-list");
+        activityList.innerHTML = `<li onclick="selectActivity(null)" class="${!state.activityId ? "active" : ""}">Class Average</li>`;
+
+        const uniqueActivities = [
+          ...new Map(mockDB.map((item) => [item.activityId, item])).values(),
+        ];
+        uniqueActivities.forEach((act) => {
+          let cleanType = act.itemType
+            .replace("_ACTIVITY", "")
+            .replace("_", " ");
+          activityList.innerHTML += `<li onclick="selectActivity('${act.activityId}')" class="${state.activityId === act.activityId ? "active" : ""}">${act.activityName}<br><span style="font-size:11px; font-weight:400; color:#8c8ca1">${cleanType}</span></li>`;
+        });
+
+        const qContainer = document.getElementById("questions-container");
+        const qList = document.getElementById("question-list");
+        const selectedAct = mockDB.find(
+          (log) => log.activityId === state.activityId,
+        );
+
+        if (selectedAct && selectedAct.itemType === "TEACHER_TEST_ACTIVITY") {
+          qContainer.classList.remove("hidden");
+          qList.innerHTML = `<li onclick="selectQuestion(null)" class="${!state.questionId ? "active" : ""}">Test Average</li>`;
+          selectedAct.activityDetails.testSessionDetails.items.forEach((q) => {
+            qList.innerHTML += `<li onclick="selectQuestion('${q.itemId}')" class="${state.questionId === q.itemId ? "active" : ""}">${q.title}</li>`;
+          });
+        } else {
+          qContainer.classList.add("hidden");
+        }
+        renderQuadrantChart(mockDB);
+        renderTimeVarianceChart(mockDB);
+        renderCompletionChart(mockDB);
+        renderFrustrationAlerts(mockDB);
+      }
+
+      // Slider Interaction Handler
+      document
+        .getElementById("mastery-threshold")
+        .addEventListener("change", function (e) {
+          state.masteryThreshold = parseInt(e.target.value, 10);
+          document.getElementById("threshold-val").innerText =
+            state.masteryThreshold;
+          // Re-render chart using current data, but with the new threshold line
+          renderQuadrantChart(mockDB);
+        });
+
+      document
+        .getElementById("class-select")
+        .addEventListener("change", (event) => {
+          state.classId = event.target.value;
+          state.activityId = null;
+          state.questionId = null;
+          mockDB = fetchClassActivitiesGraphQL(state.classId);
+          updateUI();
+        });
+      window.selectActivity = function (actId) {
+        state.activityId = actId;
+        state.questionId = null;
+        updateUI();
+      };
+      window.selectQuestion = function (qId) {
+        state.questionId = qId;
+        updateUI();
+      };
+
+      updateUI();
+    </script>
+  </body>
+</html>
